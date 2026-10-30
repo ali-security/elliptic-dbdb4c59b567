@@ -499,5 +499,114 @@ describe('ECDSA', function() {
       var sig = new Signature({ r: '00', s: '00', recoveryParam: 1 });
       assert.equal(sig.recoveryParam, 1);
     });
+
+    it('should reject DER with leading zero in length octets', function () {
+      var i;
+      var r = [];
+      for (i = 0; i < 0x80; i++)
+        r.push(0x01);
+
+      // Minimal long-form length of r is accepted
+      var sig = new Signature([ 0x30, 0x81, 0x86, 0x02, 0x81, 0x80 ]
+        .concat(r).concat([ 0x02, 0x01, 0x01 ]));
+      assert.equal(sig.r.toArray().length, 0x80);
+
+      // The same length padded with a zero octet is not DER
+      assert.throws(function () {
+        return new Signature([ 0x30, 0x81, 0x87, 0x02, 0x82, 0x00, 0x80 ]
+          .concat(r).concat([ 0x02, 0x01, 0x01 ]));
+      });
+      assert.throws(function () {
+        return new Signature([ 0x30, 0x82, 0x00, 0x86, 0x02, 0x81, 0x80 ]
+          .concat(r).concat([ 0x02, 0x01, 0x01 ]));
+      });
+    });
+
+    it('should reject DER with negative r or s', function () {
+      var sig = new Signature(
+        [ 0x30, 0x07, 0x02, 0x02, 0x00, 0x81, 0x02, 0x01, 0x01 ]);
+      assert.equal(sig.r.toString(16), '81');
+      assert.equal(sig.s.toString(16), '1');
+
+      sig = new Signature(
+        [ 0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x81 ]);
+      assert.equal(sig.r.toString(16), '1');
+      assert.equal(sig.s.toString(16), '81');
+
+      assert.throws(function () {
+        return new Signature(
+          [ 0x30, 0x06, 0x02, 0x01, 0x81, 0x02, 0x01, 0x01 ]);
+      });
+      assert.throws(function () {
+        return new Signature(
+          [ 0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x81 ]);
+      });
+    });
+  });
+
+  describe('DER signature malleability', function () {
+    function verifies(ecdsa, msg, sig, keys) {
+      try {
+        return ecdsa.verify(msg, sig, keys);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function findSignature(ecdsa, keys, predicate) {
+      for (var i = 0; i < 256; i++) {
+        var m = msg + i.toString(16);
+        var der = ecdsa.sign(m, keys).toDER();
+        if (predicate(der))
+          return { msg: m, der: der };
+      }
+      throw new Error('No matching signature found');
+    }
+
+    it('should not verify BER length with leading zero', function () {
+      var ecdsa = new elliptic.ec('p521');
+      var keys = ecdsa.genKeyPair({ entropy: entropy });
+      var der = ecdsa.sign(msg, keys).toDER();
+
+      // p521 signatures use a long-form sequence length
+      assert.equal(der[0], 0x30);
+      assert.equal(der[1], 0x81);
+      assert(ecdsa.verify(msg, der, keys));
+
+      var ber = [ 0x30, 0x82, 0x00 ].concat(der.slice(2));
+      assert(!verifies(ecdsa, msg, ber, keys));
+    });
+
+    it('should not verify unpadded negative r', function () {
+      var ecdsa = new elliptic.ec('secp256k1');
+      var keys = ecdsa.genKeyPair({ entropy: entropy });
+      var found = findSignature(ecdsa, keys, function (der) {
+        return der[3] === 0x21 && der[4] === 0x00 && (der[5] & 0x80) !== 0;
+      });
+      var der = found.der;
+      assert(ecdsa.verify(found.msg, der, keys));
+
+      var forged = [ 0x30, der[1] - 1, 0x02, 0x20 ].concat(der.slice(5));
+      assert(!verifies(ecdsa, found.msg, forged, keys));
+    });
+
+    it('should not verify unpadded negative s', function () {
+      var ecdsa = new elliptic.ec('secp256k1');
+      var keys = ecdsa.genKeyPair({ entropy: entropy });
+      var found = findSignature(ecdsa, keys, function (der) {
+        var off = 4 + der[3];
+        return der[off + 1] === 0x21 && der[off + 2] === 0x00 &&
+          (der[off + 3] & 0x80) !== 0;
+      });
+      var der = found.der;
+      var off = 4 + der[3];
+      assert(ecdsa.verify(found.msg, der, keys));
+
+      var forged = [ 0x30, der[1] - 1 ]
+        .concat(der.slice(2, off + 1))
+        .concat([ 0x20 ])
+        .concat(der.slice(off + 3));
+      assert(!verifies(ecdsa, found.msg, forged, keys));
+    });
   });
 });

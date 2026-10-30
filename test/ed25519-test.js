@@ -111,6 +111,36 @@ describe('EDDSA(\'ed25519\')', function() {
     assert(key.verify(msg, sig));
   });
 
+  it('rejects signatures with invalid size', function() {
+    var secret = toArray(new Array(65).join('0'), 'hex');
+    var msg = [ 0xB, 0xE, 0xE, 0xF ];
+    var key = ed25519.keyFromSecret(secret);
+    var sig = key.sign(msg).toHex();
+    assert(key.verify(msg, sig));
+
+    function verifies(s) {
+      try {
+        return key.verify(msg, s);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // Trailing zero octet does not change little-endian S
+    var padded = sig + '00';
+    assert.throws(function() {
+      ed25519.makeSignature(padded);
+    }, /Signature has invalid size/);
+    assert(!verifies(padded));
+    assert(!verifies(toArray(padded, 'hex')));
+
+    var truncated = sig.slice(0, 126);
+    assert.throws(function() {
+      ed25519.makeSignature(truncated);
+    }, /Signature has invalid size/);
+    assert(!verifies(truncated));
+  });
+
   describe('KeyPair', function() {
     var pair;
     var secret = '00000000000000000000000000000000' +
